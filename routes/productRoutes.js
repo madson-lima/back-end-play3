@@ -34,7 +34,7 @@ router.post(
     }
 
     const { name, description, price } = req.body;
-    const imageUrl = `https://totalfilter-backend-production.up.railway.app/uploads/${req.file.filename}`;
+    const imageUrl = `https://back-end-play3-production.up.railway.app/uploads/${req.file.filename}`;
 
     // Se o preço não for informado, permanece como string vazia
     const newProduct = {
