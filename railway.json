@@ -1,0 +1,11 @@
+{
+    "rootDir": "back-end-play3",
+    "buildCommand": "npm install && npm run build",
+    "startCommand": "npm run start",
+    "watchPaths": [
+      "back-end-play3/src/**",
+      "back-end-play3/package.json"
+    ],
+    "healthCheckPath": "/health"
+  }
+  
