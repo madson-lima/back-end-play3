@@ -1,3 +1,5 @@
+// server.js
+
 require('dotenv').config(); // Carrega as variáveis de ambiente do .env
 const express = require('express');
 const helmet = require('helmet');
@@ -18,6 +20,9 @@ const carouselRoutes = require('./routes/carouselRoutes');
 // Cria a aplicação Express
 const app = express();
 
+// ⚠️ Habilita o trust proxy para que req.protocol reflita HTTPS em produção
+app.set('trust proxy', true);
+
 // Porta definida no .env ou padrão 5000
 const PORT = process.env.PORT || 5000;
 
@@ -34,9 +39,9 @@ connectDB();
 app.use(express.json());
 app.use(helmet());
 
-// Configura CORS usando as variáveis de ambiente se quiser restringir a domínios específicos
+// Configura CORS (ajuste origin em produção, se necessário)
 app.use(cors({
-  origin: '*', // Ajuste para "https://seusite.com" em produção
+  origin: '*', 
   methods: ['GET','POST','PUT','DELETE','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization','Origin','X-Requested-With','Accept'],
   credentials: true
@@ -57,12 +62,10 @@ const storage = multer.diskStorage({
     cb(null, 'public/uploads/'); // Pasta onde os arquivos serão salvos
   },
   filename: (req, file, cb) => {
-    // Gera um nome único (timestamp + extensão)
-    cb(null, Date.now() + path.extname(file.originalname));
+    cb(null, Date.now() + path.extname(file.originalname)); // Nome único
   }
 });
 
-// Permitir apenas imagens e limitar tamanho a 5MB
 function fileFilter(req, file, cb) {
   if (!file.mimetype.startsWith('image/')) {
     return cb(new Error('Somente arquivos de imagem são permitidos!'), false);
@@ -89,20 +92,18 @@ app.get('/', (req, res) => {
   res.send('🚀 Servidor está funcionando e conectado ao MongoDB!');
 });
 
-// Rota de dashboard protegida por token (JWT)
 app.get('/admin/dashboard', verifyToken, (req, res) => {
   res.sendFile(path.join(__dirname, 'pages', 'admin-dashboard.html'));
 });
 
 // ======================================
 // 6. Rota de Upload de Imagens
-// ======================================
+// ====================================== 
 app.post('/api/upload', upload.single('image'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'Nenhuma imagem enviada!' });
   }
-
-  // Monta a URL final para acesso ao arquivo
+  // Agora req.protocol será "https" em produção
   const imageUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
   res.status(200).json({ imageUrl });
 });
@@ -117,7 +118,7 @@ app.use('/api/contact', contactRoutes);
 app.use('/api/carousel', carouselRoutes);
 
 // ======================================
-// 8. Tratamento de rota não encontrada (404)
+// 8. Rota não encontrada (404)
 // ======================================
 app.use((req, res) => {
   res.status(404).json({ message: 'Rota não encontrada!' });
@@ -128,7 +129,6 @@ app.use((req, res) => {
 // ======================================
 app.use((err, req, res, next) => {
   console.error('Erro no servidor:', err.message);
-  // Se for erro de Multer (ex: arquivo muito grande ou tipo inválido), trate aqui se quiser
   res.status(500).json({ error: 'Erro interno do servidor.' });
 });
 
