@@ -1,3 +1,5 @@
+// server.js
+
 require('dotenv').config(); // Carrega as variáveis de ambiente do .env
 const express = require('express');
 const helmet = require('helmet');
@@ -5,8 +7,6 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const multer = require('multer');
 const path = require('path');
-const mongoose = require('mongoose');
-const { GridFSBucket } = require('mongodb');
 
 // Import das configurações e rotas
 const connectDB = require('./config/db'); // Função que faz mongoose.connect(process.env.MONGO_URI)
@@ -18,7 +18,6 @@ const verifyToken = require('./middlewares/verifyToken');
 const carouselRoutes = require('./routes/carouselRoutes');
 
 // Cria a aplicação Express
-tmp = express();
 const app = express();
 
 // ⚠️ Habilita o trust proxy para que req.protocol reflita HTTPS em produção
@@ -34,23 +33,15 @@ connectDB();
 // Certifique-se de que a função connectDB faz algo como:
 // mongoose.connect(process.env.MONGO_URI).then(...).catch(...)
 
-// Inicializa o GridFSBucket assim que a conexão for aberta
-let gfsBucket;
-mongoose.connection.once('open', () => {
-  const db = mongoose.connection.db;
-  gfsBucket = new GridFSBucket(db, {
-    bucketName: 'uploads'
-  });
-  console.log('✅ GridFSBucket inicializado');
-});
-
 // ======================================
 // 2. Middlewares globais
 // ======================================
 app.use(express.json());
 app.use(helmet());
+
+// Configura CORS (ajuste origin em produção, se necessário)
 app.use(cors({
-  origin: '*',
+  origin: '*', 
   methods: ['GET','POST','PUT','DELETE','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization','Origin','X-Requested-With','Accept'],
   credentials: true
@@ -64,10 +55,17 @@ const limiter = rateLimit({
 app.use(limiter);
 
 // ======================================
-// 3. Configurar Upload de Imagens via GridFS
+// 3. Configurar Upload de Imagens (Multer)
 // ======================================
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, 'public/uploads/'); // Pasta onde os arquivos serão salvos
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + path.extname(file.originalname)); // Nome único
+  }
+});
 
-// Filtra apenas imagens
 function fileFilter(req, file, cb) {
   if (!file.mimetype.startsWith('image/')) {
     return cb(new Error('Somente arquivos de imagem são permitidos!'), false);
@@ -75,8 +73,6 @@ function fileFilter(req, file, cb) {
   cb(null, true);
 }
 
-// Usa memória para armazenar temporariamente antes de enviar ao GridFS
-const storage = multer.memoryStorage();
 const upload = multer({
   storage,
   fileFilter,
@@ -84,8 +80,9 @@ const upload = multer({
 });
 
 // ======================================
-// 4. Servir arquivos estáticos (imagens fixas)
+// 4. Servir arquivos estáticos
 // ======================================
+app.use('/uploads', express.static(path.join(__dirname, 'public/uploads')));
 app.use('/imagens', express.static(path.join(__dirname, 'public/imagens')));
 
 // ======================================
@@ -100,51 +97,19 @@ app.get('/admin/dashboard', verifyToken, (req, res) => {
 });
 
 // ======================================
-// 6. Rota de Upload de Imagens (GridFS)
-// ======================================
+// 6. Rota de Upload de Imagens
+// ====================================== 
 app.post('/api/upload', upload.single('image'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'Nenhuma imagem enviada!' });
   }
-
-  // Cria um stream de upload para o GridFS
-  const uploadStream = gfsBucket.openUploadStream(
-    `${Date.now()}_${req.file.originalname}`,
-    { contentType: req.file.mimetype }
-  );
-
-  // Escreve o buffer da imagem no GridFS
-  uploadStream.end(req.file.buffer);
-
-  uploadStream.on('error', err => {
-    console.error('Erro no GridFS upload:', err);
-    res.status(500).json({ error: 'Erro ao salvar no GridFS' });
-  });
-
-  uploadStream.on('finish', file => {
-    // Retorna a URL para acesso via rota de download
-    const imageUrl = `${req.protocol}://${req.get('host')}/api/files/${file.filename}`;
-    res.status(200).json({ imageUrl });
-  });
+  // Agora req.protocol será "https" em produção
+  const imageUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+  res.status(200).json({ imageUrl });
 });
 
 // ======================================
-// 7. Rota para servir arquivos do GridFS
-// ======================================
-app.get('/api/files/:filename', async (req, res) => {
-  try {
-    const downloadStream = gfsBucket.openDownloadStreamByName(req.params.filename);
-    res.set('Content-Type', 'application/octet-stream');
-    downloadStream.pipe(res);
-    downloadStream.on('error', () => res.status(404).json({ error: 'Arquivo não encontrado' }));
-  } catch (err) {
-    console.error('Erro ao ler arquivo no GridFS:', err);
-    res.status(500).json({ error: 'Erro ao ler o arquivo' });
-  }
-});
-
-// ======================================
-// 8. Rotas da Aplicação
+// 7. Rotas da Aplicação
 // ======================================
 app.use('/api/auth', authRoutes);
 app.use('/api/products', productRoutes);
@@ -153,14 +118,14 @@ app.use('/api/contact', contactRoutes);
 app.use('/api/carousel', carouselRoutes);
 
 // ======================================
-// 9. Rota não encontrada (404)
+// 8. Rota não encontrada (404)
 // ======================================
 app.use((req, res) => {
   res.status(404).json({ message: 'Rota não encontrada!' });
 });
 
 // ======================================
-// 10. Tratamento de erros genérico (500)
+// 9. Tratamento de erros genérico (500)
 // ======================================
 app.use((err, req, res, next) => {
   console.error('Erro no servidor:', err.message);
@@ -168,7 +133,7 @@ app.use((err, req, res, next) => {
 });
 
 // ======================================
-// 11. Iniciar o servidor
+// 10. Iniciar o servidor
 // ======================================
 app.listen(PORT, () => {
   console.log(`🚀 Servidor rodando em http://localhost:${PORT}`);
