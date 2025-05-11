@@ -20,7 +20,7 @@ const carouselRoutes = require('./routes/carouselRoutes');
 const verifyToken    = require('./middlewares/verifyToken');
 
 const app = express();
-app.set('trust proxy', true); // permite capturar req.protocol corretamente atrás de proxies
+app.set('trust proxy', 1); // confia no primeiro proxy
 const PORT = process.env.PORT || 5000;
 
 // 1) Conectar ao MongoDB e inicializar GridFSBucket
@@ -44,12 +44,12 @@ app.options('*', cors());
 app.use(express.json());
 app.use(helmet());
 
-// Rate limiter com permissão explícita para trust proxy
+// Rate limiter, confia no primeiro proxy apenas
 app.use(
   rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutos
     max: 100,                 // 100 requisições por IP
-    trustProxy: true          // explicita que confia no X-Forwarded-For
+    trustProxy: 1
   })
 );
 
@@ -65,7 +65,7 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 } // 5MB
 });
 
-// 4) Servir arquivos estáticos (CSS, JS, etc.)
+// 4) Servir arquivos estáticos
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/pages', express.static(path.join(__dirname, 'pages')));
 
@@ -80,7 +80,7 @@ app.post('/api/upload', upload.single('image'), (req, res) => {
   if (!gfsBucket) {
     return res
       .status(503)
-      .json({ error: 'Banco de arquivos ainda não pronto. Tente novamente.' });
+      .json({ error: 'Banco de arquivos não pronto. Tente novamente.' });
   }
   if (!req.file) {
     return res.status(400).json({ error: 'Nenhuma imagem enviada!' });
@@ -95,9 +95,10 @@ app.post('/api/upload', upload.single('image'), (req, res) => {
     res.status(500).json({ error: 'Falha ao salvar imagem.' });
   });
 
-  uploadStream.on('finish', file => {
-    const imageUrl = `${req.protocol}://${req.get('host')}/api/files/${file.filename}`;
-    res.status(200).json({ imageUrl });
+  uploadStream.on('finish', () => {
+    // após fim, uploadStream.filename já existe
+    const url = `${req.protocol}://${req.get('host')}/api/files/${uploadStream.filename}`;
+    res.status(200).json({ imageUrl: url });
   });
 });
 
