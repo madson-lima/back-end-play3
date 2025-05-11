@@ -20,7 +20,7 @@ const carouselRoutes = require('./routes/carouselRoutes');
 const verifyToken    = require('./middlewares/verifyToken');
 
 const app = express();
-app.set('trust proxy', true);
+app.set('trust proxy', true); // permite capturar req.protocol corretamente atrás de proxies
 const PORT = process.env.PORT || 5000;
 
 // 1) Conectar ao MongoDB e inicializar GridFSBucket
@@ -33,15 +33,25 @@ mongoose.connection.once('open', () => {
 });
 
 // 2) Middlewares globais (CORS em primeiro lugar)
-app.use(cors({
-  origin: '*',
-  methods: ['GET','POST','PUT','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization']
-}));
+app.use(
+  cors({
+    origin: '*',
+    methods: ['GET','POST','PUT','DELETE','OPTIONS'],
+    allowedHeaders: ['Content-Type','Authorization']
+  })
+);
 app.options('*', cors());
 app.use(express.json());
 app.use(helmet());
-app.use(rateLimit({ windowMs: 15*60*1000, max: 100 }));
+
+// Rate limiter com permissão explícita para trust proxy
+app.use(
+  rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutos
+    max: 100,                 // 100 requisições por IP
+    trustProxy: true          // explicita que confia no X-Forwarded-For
+  })
+);
 
 // 3) Configurar Multer para upload em memória (GridFS)
 const upload = multer({
@@ -52,14 +62,14 @@ const upload = multer({
     }
     cb(null, true);
   },
-  limits: { fileSize: 5 * 1024 * 1024 }
+  limits: { fileSize: 5 * 1024 * 1024 } // 5MB
 });
 
-// 4) Servir arquivos estáticos
+// 4) Servir arquivos estáticos (CSS, JS, etc.)
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/pages', express.static(path.join(__dirname, 'pages')));
 
-// 5) Status e dashboard
+// 5) Status e rota protegida do dashboard
 app.get('/', (req, res) => res.send('🚀 API e MongoDB OK!'));
 app.get('/admin/dashboard', verifyToken, (req, res) => {
   res.sendFile(path.join(__dirname, 'pages', 'admin-dashboard.html'));
@@ -68,7 +78,9 @@ app.get('/admin/dashboard', verifyToken, (req, res) => {
 // 6) Upload para GridFS
 app.post('/api/upload', upload.single('image'), (req, res) => {
   if (!gfsBucket) {
-    return res.status(503).json({ error: 'Banco de arquivos ainda não pronto. Tente novamente.' });
+    return res
+      .status(503)
+      .json({ error: 'Banco de arquivos ainda não pronto. Tente novamente.' });
   }
   if (!req.file) {
     return res.status(400).json({ error: 'Nenhuma imagem enviada!' });
