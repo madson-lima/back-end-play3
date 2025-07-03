@@ -47,16 +47,31 @@ exports.createProduct = async (req, res) => {
 };
 
 // ─── LISTAR TODOS OS PRODUTOS ─────────────────────────────────────────────────────
-// GET /api/products
+// GET /api/products?page=1&limit=20
 exports.getAllProducts = async (req, res) => {
   try {
-    const produtos = await Product.find().sort({ createdAt: -1 });
-    return res.status(200).json(produtos);
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
+
+    const [products, total] = await Promise.all([
+      Product.find().sort({ createdAt: -1 }).skip(skip).limit(limit),
+      Product.countDocuments()
+    ]);
+
+    const totalPages = Math.ceil(total / limit);
+
+    return res.status(200).json({
+      products,
+      totalPages,
+      currentPage: page
+    });
   } catch (error) {
     console.error("Erro em getAllProducts:", error);
     return res.status(500).json({ message: "Erro ao buscar produtos." });
   }
 };
+
 
 // ─── LISTAR APENAS LANÇAMENTOS ────────────────────────────────────────────────────
 // GET /api/products/new-releases

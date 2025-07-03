@@ -15,6 +15,7 @@ router.post(
     body("description").notEmpty().withMessage("A descrição é obrigatória"),
     body("price").optional().isNumeric().withMessage("O preço deve ser um número"),
     body("imageUrl").notEmpty().withMessage("A URL da imagem é obrigatória")
+    // Note que não validamos isLaunch aqui – pode ser true ou false ou ausente (default false)
   ],
   productController.createProduct
 );
@@ -22,10 +23,10 @@ router.post(
 // GET /api/products/new-releases
 router.get("/new-releases", productController.getNewReleases);
 
-// GET /api/products?page=1&limit=20
+// GET /api/products
 router.get("/", productController.getAllProducts);
 
-// GET /api/products/:id
+// GET /api/products/:id (valida ID antes)
 router.get(
   "/:id",
   (req, res, next) => {
