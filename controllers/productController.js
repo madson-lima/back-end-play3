@@ -18,7 +18,6 @@ exports.createProduct = async (req, res) => {
   }
 
   try {
-    // Note que agora pegamos isNewRelease, não isLaunch
     const { name, description, price, imageUrl, isNewRelease } = req.body;
 
     if (typeof imageUrl !== "string" || !imageUrl.trim()) {
@@ -30,7 +29,6 @@ exports.createProduct = async (req, res) => {
       description: description.trim(),
       price: price ? String(price) : "",
       imageUrl: imageUrl.trim(),
-      // Convertemos o booleano vindo do front
       isLaunch: isNewRelease === true || isNewRelease === "true"
     });
 
@@ -42,13 +40,26 @@ exports.createProduct = async (req, res) => {
   }
 };
 
-// ─── LISTAR TODOS OS PRODUTOS (retornando array) ─────────────────────────────────
-// GET /api/products
+// ─── LISTAR TODOS OS PRODUTOS (com paginação) ─────────────────────────────────
+// GET /api/products?page=1&limit=20
 exports.getAllProducts = async (req, res) => {
   try {
-    // traz todos os produtos, sem paginação
-    const products = await Product.find().sort({ createdAt: -1 });
-    return res.status(200).json(products);
+    const page  = parseInt(req.query.page, 10)  || 1;
+    const limit = parseInt(req.query.limit, 10) || 20;
+    const skip  = (page - 1) * limit;
+
+    const [products, total] = await Promise.all([
+      Product.find().sort({ createdAt: -1 }).skip(skip).limit(limit),
+      Product.countDocuments()
+    ]);
+
+    const totalPages = Math.ceil(total / limit);
+
+    return res.status(200).json({
+      products,
+      totalPages,
+      currentPage: page
+    });
   } catch (err) {
     console.error("Erro em getAllProducts:", err);
     return res.status(500).json({ message: "Erro ao buscar produtos." });
@@ -59,7 +70,9 @@ exports.getAllProducts = async (req, res) => {
 // GET /api/products/new-releases
 exports.getNewReleases = async (req, res) => {
   try {
-    const lancamentos = await Product.find({ isLaunch: true }).sort({ createdAt: -1 });
+    const lancamentos = await Product
+      .find({ isLaunch: true })
+      .sort({ createdAt: -1 });
     return res.status(200).json(lancamentos);
   } catch (error) {
     console.error("Erro em getNewReleases:", error);
@@ -110,7 +123,6 @@ exports.updateProduct = async (req, res) => {
       }
     }
 
-    // Atualiza campos
     produto.name        = name.trim();
     produto.description = description.trim();
     produto.price       = price ? String(price) : "";
@@ -134,7 +146,6 @@ exports.deleteProduct = async (req, res) => {
       return res.status(404).json({ message: "Produto não encontrado." });
     }
 
-    // Apaga imagem antiga do GridFS
     const fn = extractFilenameFromUrl(produto.imageUrl);
     if (fn) {
       const db = mongoose.connection.db;
