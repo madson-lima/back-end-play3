@@ -46,11 +46,11 @@ exports.createProduct = async (req, res) => {
 // GET /api/products
 exports.getAllProducts = async (req, res) => {
   try {
-    // Sem paginação, devolvemos direto um array
+    // traz todos os produtos, sem paginação
     const products = await Product.find().sort({ createdAt: -1 });
     return res.status(200).json(products);
-  } catch (error) {
-    console.error("Erro em getAllProducts:", error);
+  } catch (err) {
+    console.error("Erro em getAllProducts:", err);
     return res.status(500).json({ message: "Erro ao buscar produtos." });
   }
 };
