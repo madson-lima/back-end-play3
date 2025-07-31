@@ -1,164 +1,183 @@
-// controllers/productController.js
+const mongoose = require("mongoose");
+const { validationResult } = require("express-validator");
+const Product = require("../models/Product");
 
-const { validationResult } = require('express-validator');
-const Product = require('../models/Product');
+// ─── Função auxiliar para extrair filename de uma URL de imagem ───────────────────
+function extractFilenameFromUrl(url) {
+  // Exemplo: "https://host/api/files/upload_162738123123_arquivo.jpg"
+  // Queremos "upload_162738123123_arquivo.jpg"
+  if (!url) return null;
+  const parts = url.split("/");
+  return parts[parts.length - 1];
+}
 
-/**
- * Criar Produto
- * POST /api/products
- */
+// ─── CRIAR PRODUTO ────────────────────────────────────────────────────────────────
+// POST /api/products
+// Body: { name, description, price, imageUrl, isLaunch }
 exports.createProduct = async (req, res) => {
+  // 1) Verifica erros gerados pelo express-validator
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    // Retorna o primeiro erro encontrado
+    return res.status(400).json({ errors: errors.array() });
+  }
+
   try {
-    const { name, description, price, imageUrl, isNewRelease } = req.body;
+    const { name, description, price, imageUrl, isLaunch } = req.body;
 
-    // Validação mínima
-    if (!name || !description || !imageUrl) {
-      return res
-        .status(400)
-        .json({ error: 'Nome, descrição e imagem são obrigatórios.' });
+    // Garante que imagem seja uma URL não-vazia
+    if (typeof imageUrl !== "string" || imageUrl.trim() === "") {
+      return res.status(400).json({ message: "imageUrl inválida." });
     }
-
-    const productPrice = price || '';
 
     const newProduct = new Product({
-      name,
-      description,
-      price: productPrice,
-      imageUrl,
-      isNewRelease: !!isNewRelease, // força booleano
+      name: name.trim(),
+      description: description.trim(),
+      price: price ? String(price) : "",
+      imageUrl: imageUrl.trim(),
+      isLaunch: isLaunch === true || isLaunch === "true"
     });
+
     await newProduct.save();
-
-    res
-      .status(201)
-      .json({ message: 'Produto adicionado com sucesso!', newProduct });
+    return res.status(201).json(newProduct);
   } catch (error) {
-    console.error('Erro ao adicionar produto:', error);
-    res.status(500).json({ error: 'Erro ao adicionar produto.' });
+    console.error("Erro em createProduct:", error);
+    return res.status(500).json({ message: "Erro interno ao criar produto." });
   }
 };
 
-/**
- * Listar Todos os Produtos (com paginação)
- * GET /api/products?page=1&limit=10
- */
+// ─── LISTAR TODOS OS PRODUTOS ─────────────────────────────────────────────────────
+// GET /api/products?page=1&limit=20
 exports.getAllProducts = async (req, res) => {
-  const page  = Math.max(1, parseInt(req.query.page, 10)  || 1);
-  const limit = Math.max(1, parseInt(req.query.limit, 10) || 10);
-  const skip  = (page - 1) * limit;
-
-  // constrói filtro opcional
-  const filter = {};
-  if (req.query.isNewRelease === 'true')  filter.isNewRelease = true;
-  else if (req.query.isNewRelease === 'false') filter.isNewRelease = false;
-
   try {
-    const totalDocs = await Product.countDocuments(filter);
-    const docs = await Product.find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean();
-    const totalPages = Math.ceil(totalDocs / limit);
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
 
-    res.json({ docs, totalDocs, page, totalPages });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Erro ao buscar produtos!' });
+    const [products, total] = await Promise.all([
+      Product.find().sort({ createdAt: -1 }).skip(skip).limit(limit),
+      Product.countDocuments()
+    ]);
+
+    const totalPages = Math.ceil(total / limit);
+
+    return res.status(200).json({
+      products,
+      totalPages,
+      currentPage: page
+    });
+  } catch (error) {
+    console.error("Erro em getAllProducts:", error);
+    return res.status(500).json({ message: "Erro ao buscar produtos." });
   }
 };
 
 
-/**
- * Obter Produto pelo ID
- * GET /api/products/:id
- */
+// ─── LISTAR APENAS LANÇAMENTOS ────────────────────────────────────────────────────
+// GET /api/products/new-releases
+exports.getNewReleases = async (req, res) => {
+  try {
+    const lancamentos = await Product.find({ isLaunch: true }).sort({ createdAt: -1 });
+    return res.status(200).json(lancamentos);
+  } catch (error) {
+    console.error("Erro em getNewReleases:", error);
+    return res.status(500).json({ message: "Erro ao buscar lançamentos." });
+  }
+};
+
+// ─── OBTER PRODUTO POR ID ─────────────────────────────────────────────────────────
+// GET /api/products/:id
 exports.getProductById = async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id).lean();
-    if (!product) {
-      return res.status(404).json({ error: 'Produto não encontrado!' });
+    const { id } = req.params;
+    // Como a rota já validou ObjectId, não precisamos validar aqui novamente
+    const produto = await Product.findById(id);
+    if (!produto) {
+      return res.status(404).json({ message: "Produto não encontrado." });
     }
-    res.status(200).json(product);
-  } catch (err) {
-    console.error('Erro ao buscar produto:', err);
-    res.status(500).json({ error: 'Erro ao buscar o produto!' });
+    return res.status(200).json(produto);
+  } catch (error) {
+    console.error("Erro em getProductById:", error);
+    return res.status(500).json({ message: "Erro ao buscar produto." });
   }
 };
 
-/**
- * Atualizar Produto
- * PUT /api/products/:id
- */
+// ─── ATUALIZAR PRODUTO ────────────────────────────────────────────────────────────
+// PUT /api/products/:id
+// Body: { name, description, price, imageUrl, isLaunch }
 exports.updateProduct = async (req, res) => {
-  // validações de express-validator, se existir
+  // Validação do body
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ errors: errors.array() });
   }
 
-  const { name, description, price, imageUrl, isNewRelease } = req.body;
-
   try {
-    const updatedProduct = await Product.findByIdAndUpdate(
-      req.params.id,
-      {
-        name,
-        description,
-        price: price || '',
-        imageUrl,
-        isNewRelease: !!isNewRelease,
-      },
-      { new: true, runValidators: true }
-    ).lean();
+    const { id } = req.params;
+    const { name, description, price, imageUrl, isLaunch } = req.body;
 
-    if (!updatedProduct) {
-      return res.status(404).json({ error: 'Produto não encontrado!' });
+    // Verifica existência do produto
+    const produtoExistente = await Product.findById(id);
+    if (!produtoExistente) {
+      return res.status(404).json({ message: "Produto não encontrado." });
     }
 
-    res
-      .status(200)
-      .json({ message: 'Produto atualizado com sucesso!', product: updatedProduct });
-  } catch (err) {
-    console.error('Erro ao atualizar produto:', err);
-    res.status(500).json({ error: 'Erro ao atualizar produto!' });
+    // Se a imagem foi alterada (URL diferente), apagamos o arquivo antigo do GridFS
+    if (imageUrl && produtoExistente.imageUrl !== imageUrl) {
+      const oldFilename = extractFilenameFromUrl(produtoExistente.imageUrl);
+      if (oldFilename) {
+        const db = mongoose.connection.db;
+        const filesColl = db.collection("uploads.files");
+        const fileDoc = await filesColl.findOne({ filename: oldFilename });
+        if (fileDoc) {
+          const gfsBucket = new mongoose.mongo.GridFSBucket(db, { bucketName: "uploads" });
+          await gfsBucket.delete(fileDoc._id);
+        }
+      }
+    }
+
+    // Atualiza campos
+    produtoExistente.name = name.trim();
+    produtoExistente.description = description.trim();
+    produtoExistente.price = price ? String(price) : "";
+    produtoExistente.imageUrl = imageUrl.trim();
+    produtoExistente.isLaunch = isLaunch === true || isLaunch === "true";
+
+    await produtoExistente.save();
+    return res.status(200).json(produtoExistente);
+  } catch (error) {
+    console.error("Erro em updateProduct:", error);
+    return res.status(500).json({ message: "Erro ao atualizar produto." });
   }
 };
 
-/**
- * Deletar Produto
- * DELETE /api/products/:id
- */
+// ─── DELETAR PRODUTO ──────────────────────────────────────────────────────────────
+// DELETE /api/products/:id
 exports.deleteProduct = async (req, res) => {
   try {
-    const deletedProduct = await Product.findByIdAndDelete(req.params.id).lean();
-    if (!deletedProduct) {
-      return res.status(404).json({ error: 'Produto não encontrado!' });
-    }
-    res.status(200).json({ message: 'Produto deletado com sucesso!' });
-  } catch (err) {
-    console.error('Erro ao deletar produto:', err);
-    res.status(500).json({ error: 'Erro ao deletar produto!' });
-  }
-};
-
-/**
- * Listar Novos Lançamentos
- * GET /api/products/releases
- */
-exports.getNewReleases = async (req, res) => {
-  try {
-    const newReleases = await Product.find({ isNewRelease: true })
-      .sort({ createdAt: -1 })
-      .lean();
-
-    if (!newReleases.length) {
-      return res.status(404).json({ error: 'Nenhum lançamento encontrado!' });
+    const { id } = req.params;
+    const produto = await Product.findById(id);
+    if (!produto) {
+      return res.status(404).json({ message: "Produto não encontrado." });
     }
 
-    res.status(200).json(newReleases);
+    // Apaga o arquivo de imagem do GridFS
+    const filename = extractFilenameFromUrl(produto.imageUrl);
+    if (filename) {
+      const db = mongoose.connection.db;
+      const filesColl = db.collection("uploads.files");
+      const fileDoc = await filesColl.findOne({ filename: filename });
+      if (fileDoc) {
+        const gfsBucket = new mongoose.mongo.GridFSBucket(db, { bucketName: "uploads" });
+        await gfsBucket.delete(fileDoc._id);
+      }
+    }
+
+    // Remove o documento do produto
+    await Product.deleteOne({ _id: id });
+    return res.status(200).json({ message: "Produto removido com sucesso." });
   } catch (error) {
-    console.error('Erro ao buscar lançamentos:', error);
-    res.status(500).json({ error: 'Erro ao buscar os lançamentos.' });
+    console.error("Erro em deleteProduct:", error);
+    return res.status(500).json({ message: "Erro ao deletar produto." });
   }
 };
