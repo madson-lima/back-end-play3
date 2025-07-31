@@ -6,27 +6,49 @@ const verifyToken = require("../middlewares/verifyToken");
 
 const router = express.Router();
 
+// Validação comum para POST e PUT
+const productValidation = [
+  body("name")
+    .notEmpty()
+    .withMessage("O nome do produto é obrigatório"),
+  body("description")
+    .notEmpty()
+    .withMessage("A descrição é obrigatória"),
+  body("price")
+    .optional()
+    .isNumeric()
+    .withMessage("O preço deve ser um número"),
+  body("imageUrl")
+    .notEmpty()
+    .withMessage("A URL da imagem é obrigatória"),
+  body("isNewRelease")
+    .optional()
+    .isBoolean()
+    .withMessage("isNewRelease deve ser true ou false")
+    .toBoolean()
+];
+
 // POST /api/products
 router.post(
   "/",
   verifyToken,
-  [
-    body("name").notEmpty().withMessage("O nome do produto é obrigatório"),
-    body("description").notEmpty().withMessage("A descrição é obrigatória"),
-    body("price").optional().isNumeric().withMessage("O preço deve ser um número"),
-    body("imageUrl").notEmpty().withMessage("A URL da imagem é obrigatória")
-    // Note que não validamos isLaunch aqui – pode ser true ou false ou ausente (default false)
-  ],
+  productValidation,
   productController.createProduct
 );
 
 // GET /api/products/new-releases
-router.get("/new-releases", productController.getNewReleases);
+router.get(
+  "/new-releases",
+  productController.getNewReleases
+);
 
 // GET /api/products
-router.get("/", productController.getAllProducts);
+router.get(
+  "/",
+  productController.getAllProducts
+);
 
-// GET /api/products/:id (valida ID antes)
+// GET /api/products/:id (valida ObjectId)
 router.get(
   "/:id",
   (req, res, next) => {
@@ -42,16 +64,15 @@ router.get(
 router.put(
   "/:id",
   verifyToken,
-  [
-    body("name").notEmpty().withMessage("O nome do produto é obrigatório"),
-    body("description").notEmpty().withMessage("A descrição é obrigatória"),
-    body("price").optional().isNumeric().withMessage("O preço deve ser um número"),
-    body("imageUrl").notEmpty().withMessage("A URL da imagem é obrigatória")
-  ],
+  productValidation,
   productController.updateProduct
 );
 
 // DELETE /api/products/:id
-router.delete("/:id", verifyToken, productController.deleteProduct);
+router.delete(
+  "/:id",
+  verifyToken,
+  productController.deleteProduct
+);
 
 module.exports = router;
