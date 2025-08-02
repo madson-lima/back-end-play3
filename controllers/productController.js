@@ -1,3 +1,5 @@
+// controllers/productController.js
+
 const mongoose = require("mongoose");
 const { validationResult } = require("express-validator");
 const Product = require("../models/Product");
@@ -40,11 +42,18 @@ exports.createProduct = async (req, res) => {
   }
 };
 
-// ─── LISTAR TODOS OS PRODUTOS (com paginação) ─────────────────────────────────
-// GET /api/products?page=1&limit=20
+// ─── LISTAR TODOS OS PRODUTOS (com fallback para chamadas sem paginação) ─────────
+// GET /api/products
 exports.getAllProducts = async (req, res) => {
   try {
-    const page  = parseInt(req.query.page, 10)  || 1;
+    // Se não vier ?page na query, devolve array puro de todos os produtos
+    if (req.query.page === undefined) {
+      const all = await Product.find().sort({ createdAt: -1 });
+      return res.status(200).json(all);
+    }
+
+    // Senão, faz paginação normal
+    const page  = parseInt(req.query.page,  10) || 1;
     const limit = parseInt(req.query.limit, 10) || 20;
     const skip  = (page - 1) * limit;
 
@@ -70,9 +79,7 @@ exports.getAllProducts = async (req, res) => {
 // GET /api/products/new-releases
 exports.getNewReleases = async (req, res) => {
   try {
-    const lancamentos = await Product
-      .find({ isLaunch: true })
-      .sort({ createdAt: -1 });
+    const lancamentos = await Product.find({ isLaunch: true }).sort({ createdAt: -1 });
     return res.status(200).json(lancamentos);
   } catch (error) {
     console.error("Erro em getNewReleases:", error);
@@ -123,6 +130,7 @@ exports.updateProduct = async (req, res) => {
       }
     }
 
+    // Atualiza campos
     produto.name        = name.trim();
     produto.description = description.trim();
     produto.price       = price ? String(price) : "";
@@ -146,6 +154,7 @@ exports.deleteProduct = async (req, res) => {
       return res.status(404).json({ message: "Produto não encontrado." });
     }
 
+    // Apaga imagem antiga do GridFS
     const fn = extractFilenameFromUrl(produto.imageUrl);
     if (fn) {
       const db = mongoose.connection.db;
