@@ -18,7 +18,7 @@ const carouselRoutes = require('./routes/carouselRoutes');
 const verifyToken    = require('./middlewares/verifyToken');
 
 const app = express();
-app.set('trust proxy', 1); // confia no primeiro proxy
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 5000;
 
 /*------------------------------------------------------------
@@ -44,35 +44,38 @@ app.use(
 );
 app.options('*', cors());
 app.use(express.json());
-app.use(helmet());
+
+// ⚠️ Helmet ajustado para permitir incorporação cross-origin (CORP)
+app.use(helmet({
+  crossOriginEmbedderPolicy: false,              // não exige COEP
+  crossOriginResourcePolicy: { policy: 'cross-origin' } // libera recursos para outros domínios
+}));
 
 /*------------------------------------------------------------
   3) Definição de rate limiters específicos
 ------------------------------------------------------------*/
-// Limiter restrito para endpoints de autenticação ou rotas sensíveis (ex.: login)
-// 10 requisições a cada 15 minutos por IP
+// 10 req / 15 min para rotas sensíveis (auth)
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutos
+  windowMs: 15 * 60 * 1000,
   max: 10,
-  message: { error: 'Muitas tentativas de autenticação. Aguarde alguns minutos antes de tentar novamente.' },
+  message: { error: 'Muitas tentativas de autenticação. Aguarde alguns minutos.' },
   standardHeaders: true,
   legacyHeaders: false,
   trustProxy: 1
 });
 
-// Limiter mais flexível para demais rotas de API (CRUD, uploads, listagens, etc.)
-// 1000 requisições a cada 15 minutos por IP
+// 1000 req / 15 min para demais rotas
 const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutos
+  windowMs: 15 * 60 * 1000,
   max: 1000,
-  message: { error: 'Muitas requisições em pouco tempo. Tente novamente em alguns instantes.' },
+  message: { error: 'Muitas requisições em pouco tempo. Tente novamente em instantes.' },
   standardHeaders: true,
   legacyHeaders: false,
   trustProxy: 1
 });
 
 /*------------------------------------------------------------
-  4) Servir arquivos estáticos SEM rate limit
+  4) Servir arquivos estáticos (sem rate limit)
 ------------------------------------------------------------*/
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/pages', express.static(path.join(__dirname, 'pages')));
@@ -86,7 +89,7 @@ app.get('/admin/dashboard', verifyToken, (req, res) => {
 });
 
 /*------------------------------------------------------------
-  6) Configurar Multer para upload em memória (GridFS)
+  6) Multer (upload em memória) para GridFS
 ------------------------------------------------------------*/
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -112,8 +115,12 @@ app.post('/api/upload', apiLimiter, upload.single('image'), (req, res) => {
     return res.status(400).json({ error: 'Nenhuma imagem enviada!' });
   }
 
-  const filename = `upload_${Date.now()}${path.extname(req.file.originalname)}`;
-  const uploadStream = gfsBucket.openUploadStream(filename, { contentType: req.file.mimetype });
+  const filename = `upload_${Date.now()}${path.extname(req.file.originalname || '')}`;
+  // salva também o mime em metadata (além de contentType) para compatibilidade
+  const uploadStream = gfsBucket.openUploadStream(filename, {
+    contentType: req.file.mimetype,
+    metadata: { contentType: req.file.mimetype }
+  });
   uploadStream.end(req.file.buffer);
 
   uploadStream.on('error', err => {
@@ -123,28 +130,56 @@ app.post('/api/upload', apiLimiter, upload.single('image'), (req, res) => {
 
   uploadStream.on('finish', () => {
     const url = `${req.protocol}://${req.get('host')}/api/files/${uploadStream.filename}`;
-    res.status(200).json({ imageUrl: url });
+    res.status(200).json({ imageUrl: url, filename: uploadStream.filename });
   });
 });
 
 /*------------------------------------------------------------
-  8) Download de imagem do GridFS em /api/files/:filename SEM rate limit
-     Adiciona cabeçalho de cache (1 hora) para reduzir hits no servidor
+  8) Download de imagem do GridFS em /api/files/:filename
+     - Define headers que liberam uso cross-origin (CORS/CORP)
+     - Define Content-Type correto
+     - Cache de 1 hora
 ------------------------------------------------------------*/
-app.get('/api/files/:filename', (req, res) => {
+app.get('/api/files/:filename', async (req, res) => {
   if (!gfsBucket) {
     return res.status(503).json({ error: 'Serviço indisponível.' });
   }
-  try {
-    // Configurar cache no lado do cliente (1 hora = 3600 segundos)
-    res.set('Cache-Control', 'public, max-age=3600');
-    // Ajustar Content-Type conforme o tipo de imagem
-    // Se preferir, detecte dinamicamente: res.set('Content-Type', req.query.contentType || 'image/jpeg');
-    res.set('Content-Type', 'image/jpeg');
 
-    const downloadStream = gfsBucket.openDownloadStreamByName(req.params.filename);
+  try {
+    const filename = req.params.filename;
+
+    // Busca metadados do arquivo para obter o mime correto
+    const files = await gfsBucket.find({ filename }).toArray();
+    if (!files || files.length === 0) {
+      return res.status(404).json({ error: 'Arquivo não encontrado.' });
+    }
+
+    const file = files[0];
+    const mime =
+      file.contentType ||
+      (file.metadata && (file.metadata.contentType || file.metadata.mime)) ||
+      'application/octet-stream';
+
+    // ✅ headers que evitam ERR_BLOCKED_BY_RESPONSE.NotSameOrigin
+    res.set({
+      'Access-Control-Allow-Origin': '*',
+      'Cross-Origin-Resource-Policy': 'cross-origin',
+      'Cache-Control': 'public, max-age=3600',
+      'Content-Type': mime
+      // 'Timing-Allow-Origin': '*' // opcional
+    });
+
+    const downloadStream = gfsBucket.openDownloadStreamByName(filename);
+    downloadStream.on('error', (err) => {
+      console.error('Erro no stream GridFS:', err);
+      if (!res.headersSent) {
+        res.status(404).json({ error: 'Arquivo não encontrado.' });
+      } else {
+        res.end();
+      }
+    });
+
     downloadStream.pipe(res);
-    downloadStream.on('error', () => res.status(404).json({ error: 'Arquivo não encontrado.' }));
   } catch (err) {
     console.error('❌ Erro ao ler arquivo GridFS:', err);
     res.status(500).json({ error: 'Erro ao ler arquivo no servidor.' });
@@ -152,7 +187,7 @@ app.get('/api/files/:filename', (req, res) => {
 });
 
 /*------------------------------------------------------------
-  9) Aplicar rateLimiter apenas nas rotas de API sensíveis
+  9) Aplicar rateLimiter apenas nas rotas de API
 ------------------------------------------------------------*/
 app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/products', apiLimiter, productRoutes);
