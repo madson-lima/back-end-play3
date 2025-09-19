@@ -1,47 +1,54 @@
 require('dotenv').config();
 
-const express       = require('express');
-const helmet        = require('helmet');
-const cors          = require('cors');
-const rateLimit     = require('express-rate-limit');
-const mongoose      = require('mongoose');
+const express         = require('express');
+const helmet          = require('helmet');
+const cors             = require('cors');
+const rateLimit        = require('express-rate-limit');
+const mongoose         = require('mongoose');
 const { GridFSBucket } = require('mongodb');
-const multer        = require('multer');
-const path          = require('path');
-const https         = require('https');          // << para o proxy
-const http          = require('http');           // << para o proxy
-const { URL }       = require('url');            // << para o proxy
+const multer           = require('multer');
+const path              = require('path');
+const https              = require('https');
+const http                 = require('http');
+const { URL }               = require('url');
 
 // Rotas e middlewares próprios
-const connectDB      = require('./config/db');
-const authRoutes     = require('./routes/authRoutes');
-const productRoutes  = require('./routes/productRoutes');
-const postRoutes     = require('./routes/postRoutes');
-const contactRoutes  = require('./routes/contactRoutes');
-const carouselRoutes = require('./routes/carouselRoutes');
-const verifyToken    = require('./middlewares/verifyToken');
+const connectDB       = require('./config/db');
+const authRoutes       = require('./routes/authRoutes');
+const productRoutes    = require('./routes/productRoutes');
+const postRoutes         = require('./routes/postRoutes');
+const contactRoutes      = require('./routes/contactRoutes');
+const carouselRoutes     = require('./routes/carouselRoutes');
+const verifyToken         = require('./middlewares/verifyToken');
 
 const app  = express();
 const PORT = process.env.PORT || 5000;
 app.set('trust proxy', 1);
 
-/* ---------------------------------------------
- * 1) MongoDB + GridFS
- * -------------------------------------------*/
+/* =========================================================
+   1) Redirecionar HTTP → HTTPS (produção)
+========================================================= */
+app.use((req, res, next) => {
+  const proto = req.get('x-forwarded-proto');
+  if (process.env.NODE_ENV === 'production' && proto && proto !== 'https') {
+    return res.redirect(301, `https://${req.get('host')}${req.originalUrl}`);
+  }
+  next();
+});
+
+/* =========================================================
+   2) Conectar ao MongoDB + inicializar GridFSBucket
+========================================================= */
 connectDB();
 let gfsBucket;
 mongoose.connection.once('open', () => {
-  const db = mongoose.connection.db;
-  gfsBucket = new GridFSBucket(db, { bucketName: 'uploads' });
+  gfsBucket = new GridFSBucket(mongoose.connection.db, { bucketName: 'uploads' });
   console.log('✅ GridFSBucket inicializado');
 });
 
-/* ---------------------------------------------
- * 2) Middlewares globais
- *    - CORS liberado
- *    - JSON
- *    - Helmet sem COEP e com CORP = cross-origin
- * -------------------------------------------*/
+/* =========================================================
+   3) Middlewares globais
+========================================================= */
 app.use(cors({
   origin: '*',
   methods: ['GET','POST','PUT','DELETE','OPTIONS'],
@@ -52,20 +59,21 @@ app.options('*', cors());
 app.use(express.json());
 
 app.use(helmet({
-  crossOriginEmbedderPolicy: false,                // não exige COEP
-  crossOriginResourcePolicy: { policy: 'cross-origin' } // libera incorporação cross-origin
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: 'cross-origin' }
 }));
 
-/* ---------------------------------------------
- * 3) Rate limiters
- * -------------------------------------------*/
+app.disable('x-powered-by');
+
+/* =========================================================
+   4) Rate limiters
+========================================================= */
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
   message: { error: 'Muitas tentativas de autenticação. Aguarde alguns minutos.' },
   standardHeaders: true,
-  legacyHeaders: false,
-  trustProxy: 1
+  legacyHeaders: false
 });
 
 const apiLimiter = rateLimit({
@@ -73,73 +81,65 @@ const apiLimiter = rateLimit({
   max: 1000,
   message: { error: 'Muitas requisições em pouco tempo. Tente novamente em instantes.' },
   standardHeaders: true,
-  legacyHeaders: false,
-  trustProxy: 1
+  legacyHeaders: false
 });
 
-/* ---------------------------------------------
- * 4) Estáticos
- * -------------------------------------------*/
-app.use(express.static(path.join(__dirname, 'public')));
-app.use('/pages', express.static(path.join(__dirname, 'pages')));
-// (opcional) se tiver pasta local de imagens:
-app.use('/imagens', express.static(path.join(__dirname, 'imagens'), {
+/* =========================================================
+   5) Arquivos estáticos
+========================================================= */
+app.use(express.static(path.join(__dirname, 'public'), {
+  maxAge: '1h',
   setHeaders(res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   }
 }));
+app.use('/pages', express.static(path.join(__dirname, 'pages')));
+app.use('/imagens', express.static(path.join(__dirname, 'imagens')));
 
-/* ---------------------------------------------
- * 5) Rotas simples
- * -------------------------------------------*/
+/* =========================================================
+   6) Rotas simples
+========================================================= */
 app.get('/', (req, res) => res.send('🚀 API e MongoDB OK!'));
 app.get('/admin/dashboard', verifyToken, (req, res) => {
   res.sendFile(path.join(__dirname, 'pages', 'admin-dashboard.html'));
 });
 
-/* ---------------------------------------------
- * 5.1) Proxy de imagens (same-origin)
- *      /api/image-proxy?url=<URL-ABSOLUTA-DA-IMAGEM>
- * -------------------------------------------*/
+/* =========================================================
+   7) Proxy de imagens externas → same-origin
+========================================================= */
 app.get('/api/image-proxy', (req, res) => {
   const target = req.query.url;
   if (!target) return res.status(400).send('Missing url');
 
   let u;
   try { u = new URL(target); } catch { return res.status(400).send('Invalid url'); }
-
-  // somente http/https
-  if (!/^https?:$/.test(u.protocol)) {
-    return res.status(400).send('Unsupported protocol');
-  }
+  if (!/^https?:$/.test(u.protocol)) return res.status(400).send('Unsupported protocol');
 
   const client = u.protocol === 'https:' ? https : http;
-
-  client.get(u, (r) => {
+  const request = client.get(u, (r) => {
     const ct = r.headers['content-type'] || '';
-    if (!ct.startsWith('image/')) {
-      res.status(415).send('Unsupported media type');
-      r.resume();
-      return;
-    }
+    if (!ct.startsWith('image/')) { res.status(415).send('Unsupported media type'); r.resume(); return; }
 
-    // headers que evitam bloqueio por CORP/CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     res.setHeader('Cache-Control', 'public, max-age=3600');
     res.setHeader('Content-Type', ct);
 
     r.pipe(res);
-  }).on('error', (err) => {
+  });
+
+  request.on('error', (err) => {
     console.error('Proxy error:', err);
     res.status(502).send('Bad gateway');
   });
+
+  request.setTimeout(12000, () => request.destroy(new Error('Upstream timeout')));
 });
 
-/* ---------------------------------------------
- * 6) Multer (upload em memória)
- * -------------------------------------------*/
+/* =========================================================
+   8) Upload com Multer para GridFS
+========================================================= */
 const upload = multer({
   storage: multer.memoryStorage(),
   fileFilter: (req, file, cb) => {
@@ -148,20 +148,12 @@ const upload = multer({
     }
     cb(null, true);
   },
-  limits: { fileSize: 5 * 1024 * 1024 } // 5MB
+  limits: { fileSize: 5 * 1024 * 1024 }
 });
 
-/* ---------------------------------------------
- * 7) Upload para GridFS
- *    - salva contentType e metadata.contentType
- * -------------------------------------------*/
 app.post('/api/upload', apiLimiter, upload.single('image'), (req, res) => {
-  if (!gfsBucket) {
-    return res.status(503).json({ error: 'Banco de arquivos não pronto. Tente novamente mais tarde.' });
-  }
-  if (!req.file) {
-    return res.status(400).json({ error: 'Nenhuma imagem enviada!' });
-  }
+  if (!gfsBucket) return res.status(503).json({ error: 'Banco de arquivos não pronto' });
+  if (!req.file) return res.status(400).json({ error: 'Nenhuma imagem enviada!' });
 
   const filename = `upload_${Date.now()}${path.extname(req.file.originalname || '')}`;
   const uploadStream = gfsBucket.openUploadStream(filename, {
@@ -173,7 +165,7 @@ app.post('/api/upload', apiLimiter, upload.single('image'), (req, res) => {
 
   uploadStream.on('error', err => {
     console.error('❌ Erro no upload GridFS:', err);
-    res.status(500).json({ error: 'Falha ao salvar imagem no servidor.' });
+    res.status(500).json({ error: 'Falha ao salvar imagem' });
   });
 
   uploadStream.on('finish', () => {
@@ -182,27 +174,19 @@ app.post('/api/upload', apiLimiter, upload.single('image'), (req, res) => {
   });
 });
 
-/* ---------------------------------------------
- * 8) Download do GridFS
- *    - headers CORS/CORP + Content-Type correto
- *    - cache 1h
- * -------------------------------------------*/
+/* =========================================================
+   9) Download de imagem do GridFS
+========================================================= */
 app.get('/api/files/:filename', async (req, res) => {
-  if (!gfsBucket) {
-    return res.status(503).json({ error: 'Serviço indisponível.' });
-  }
+  if (!gfsBucket) return res.status(503).json({ error: 'Serviço indisponível.' });
 
   try {
     const filename = req.params.filename;
-
     const files = await gfsBucket.find({ filename }).toArray();
-    if (!files || files.length === 0) {
-      return res.status(404).json({ error: 'Arquivo não encontrado.' });
-    }
+    if (!files.length) return res.status(404).json({ error: 'Arquivo não encontrado.' });
 
     const file = files[0];
-    const mime =
-      file.contentType ||
+    const mime = file.contentType ||
       (file.metadata && (file.metadata.contentType || file.metadata.mime)) ||
       'application/octet-stream';
 
@@ -211,20 +195,10 @@ app.get('/api/files/:filename', async (req, res) => {
       'Cross-Origin-Resource-Policy': 'cross-origin',
       'Cache-Control': 'public, max-age=3600',
       'Content-Type': mime
-      // 'Timing-Allow-Origin': '*' // opcional
     });
 
     const downloadStream = gfsBucket.openDownloadStreamByName(filename);
-
-    downloadStream.on('error', (err) => {
-      console.error('Erro no stream GridFS:', err);
-      if (!res.headersSent) {
-        res.status(404).json({ error: 'Arquivo não encontrado.' });
-      } else {
-        res.end();
-      }
-    });
-
+    downloadStream.on('error', () => res.status(404).json({ error: 'Arquivo não encontrado.' }));
     downloadStream.pipe(res);
   } catch (err) {
     console.error('❌ Erro ao ler arquivo GridFS:', err);
@@ -232,33 +206,33 @@ app.get('/api/files/:filename', async (req, res) => {
   }
 });
 
-/* ---------------------------------------------
- * 9) Rotas de API com limiters
- * -------------------------------------------*/
+/* =========================================================
+   10) Rotas de API com limiters
+========================================================= */
 app.use('/api/auth',     authLimiter, authRoutes);
 app.use('/api/products', apiLimiter,  productRoutes);
 app.use('/api/posts',    apiLimiter,  postRoutes);
 app.use('/api/contact',  apiLimiter,  contactRoutes);
 app.use('/api/carousel', apiLimiter,  carouselRoutes);
 
-/* ---------------------------------------------
- * 10) 404
- * -------------------------------------------*/
+/* =========================================================
+   11) 404 padrão
+========================================================= */
 app.use((req, res) => {
   res.status(404).json({ message: 'Rota não encontrada!' });
 });
 
-/* ---------------------------------------------
- * 11) Handler de erros
- * -------------------------------------------*/
+/* =========================================================
+   12) Tratamento de erros
+========================================================= */
 app.use((err, req, res, next) => {
   console.error('❌ Erro interno:', err.message);
   res.status(500).json({ error: 'Erro interno do servidor.' });
 });
 
-/* ---------------------------------------------
- * 12) Start
- * -------------------------------------------*/
+/* =========================================================
+   13) Iniciar servidor
+========================================================= */
 app.listen(PORT, () => {
   console.log(`🚀 Servidor rodando em http://localhost:${PORT}`);
 });
