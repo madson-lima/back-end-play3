@@ -8,6 +8,9 @@ const mongoose      = require('mongoose');
 const { GridFSBucket } = require('mongodb');
 const multer        = require('multer');
 const path          = require('path');
+const https         = require('https');          // << para o proxy
+const http          = require('http');           // << para o proxy
+const { URL }       = require('url');            // << para o proxy
 
 // Rotas e middlewares próprios
 const connectDB      = require('./config/db');
@@ -93,6 +96,45 @@ app.use('/imagens', express.static(path.join(__dirname, 'imagens'), {
 app.get('/', (req, res) => res.send('🚀 API e MongoDB OK!'));
 app.get('/admin/dashboard', verifyToken, (req, res) => {
   res.sendFile(path.join(__dirname, 'pages', 'admin-dashboard.html'));
+});
+
+/* ---------------------------------------------
+ * 5.1) Proxy de imagens (same-origin)
+ *      /api/image-proxy?url=<URL-ABSOLUTA-DA-IMAGEM>
+ * -------------------------------------------*/
+app.get('/api/image-proxy', (req, res) => {
+  const target = req.query.url;
+  if (!target) return res.status(400).send('Missing url');
+
+  let u;
+  try { u = new URL(target); } catch { return res.status(400).send('Invalid url'); }
+
+  // somente http/https
+  if (!/^https?:$/.test(u.protocol)) {
+    return res.status(400).send('Unsupported protocol');
+  }
+
+  const client = u.protocol === 'https:' ? https : http;
+
+  client.get(u, (r) => {
+    const ct = r.headers['content-type'] || '';
+    if (!ct.startsWith('image/')) {
+      res.status(415).send('Unsupported media type');
+      r.resume();
+      return;
+    }
+
+    // headers que evitam bloqueio por CORP/CORS
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.setHeader('Content-Type', ct);
+
+    r.pipe(res);
+  }).on('error', (err) => {
+    console.error('Proxy error:', err);
+    res.status(502).send('Bad gateway');
+  });
 });
 
 /* ---------------------------------------------
